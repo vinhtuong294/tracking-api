@@ -242,6 +242,13 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
               const statusEl = document.querySelector('.tb-status-detail');
               if (statusEl) {
                   const state = statusEl.innerText.trim();
+                  
+                  let expectedDelivery = null;
+                  const ed = document.querySelector('[class*="expected"]');
+                  if (ed) {
+                      expectedDelivery = ed.innerText.replace(/\s+/g, ' ').trim();
+                  }
+                  
                   const events = [];
                   const historyItems = document.querySelectorAll('.tb-step');
                   
@@ -256,7 +263,7 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
                           events.push({ time: timeStr, location: locationEl ? locationEl.innerText.trim() : '', details: detailEl.innerText.trim() });
                       }
                   });
-                  return { state, events };
+                  return { state, expectedDelivery, events };
               }
               attempts++;
               await sleep(200);
@@ -290,6 +297,7 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
         trackingNumber: trackingNumber,
         carrier: 'USPS',
         status: mappedStatus,
+        expectedDelivery: result.expectedDelivery || null,
         events: formattedEvents,
         source: 'USPS Web API Direct (Sub-5s)'
       };
@@ -331,6 +339,13 @@ async function retryFetchUSPS(trackingNumber) {
                 const statusEl = document.querySelector('.tb-status-detail');
                 if (statusEl) {
                     const state = statusEl.innerText.trim();
+                    
+                    let expectedDelivery = null;
+                    const ed = document.querySelector('[class*="expected"]');
+                    if (ed) {
+                        expectedDelivery = ed.innerText.replace(/\s+/g, ' ').trim();
+                    }
+                    
                     const events = [];
                     const historyItems = document.querySelectorAll('.tb-step');
                     historyItems.forEach(item => {
@@ -344,7 +359,7 @@ async function retryFetchUSPS(trackingNumber) {
                             events.push({ time: timeStr, location: locationEl ? locationEl.innerText.trim() : '', details: detailEl.innerText.trim() });
                         }
                     });
-                    return { state, events };
+                    return { state, expectedDelivery, events };
                 }
                 attempts++;
                 await sleep(200);
@@ -368,6 +383,7 @@ async function retryFetchUSPS(trackingNumber) {
             trackingNumber: trackingNumber,
             carrier: 'USPS',
             status: mappedStatus,
+            expectedDelivery: result.expectedDelivery || null,
             events: formattedEvents,
             source: 'USPS Web API Direct (Retry Sub-5s)'
         };
