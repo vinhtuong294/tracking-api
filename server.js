@@ -414,7 +414,7 @@ class AsyncQueue {
 // With Request Hedging (2 proxies per request) and 5 proxies total, max safe concurrency is 2.
 const trackingQueue = new AsyncQueue(2);
 
-app.post('/api/track', async (req, res) => {
+app.post('/api/search', async (req, res) => {
   const { trackingNumbers } = req.body;
   if (!trackingNumbers || !Array.isArray(trackingNumbers) || trackingNumbers.length === 0) {
     return res.status(400).json({ error: 'Invalid tracking numbers format.' });
