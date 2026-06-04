@@ -9,9 +9,25 @@ puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const MAX_BROWSERS = Math.max(1, Number.parseInt(process.env.MAX_BROWSERS || '5', 10));
+const TRACKING_CONCURRENCY = Math.max(1, Number.parseInt(process.env.TRACKING_CONCURRENCY || '2', 10));
+const MAX_TRACKING_NUMBERS = Math.max(1, Number.parseInt(process.env.MAX_TRACKING_NUMBERS || '20', 10));
+const BOOT_BROWSERS = process.env.BOOT_BROWSERS !== 'false';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origin is not allowed by CORS'));
+  }
+}));
+app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Proxy Pool Initialization
@@ -54,7 +70,13 @@ async function initBrowserForProxy(proxyUrl) {
     
     let launchOptions = {
         headless: 'new',
-        args: []
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote'
+        ]
     };
 
     if (proxyUrl && proxyUrl !== 'null' && proxyUrl !== 'undefined') {
@@ -104,7 +126,7 @@ async function bootAllBrowsers() {
     console.log('[Browser Pool] Starting global boot sequence...');
     let goodCount = 0;
     for (const proxy of proxies) {
-        if (goodCount >= 5) break;
+        if (goodCount >= 1) break; // Chỉ boot 1 trình duyệt để tiết kiệm RAM (512MB giới hạn)
         const success = await initBrowserForProxy(proxy);
         if (success) goodCount++;
     }
@@ -117,7 +139,7 @@ function getNextProxy() {
       return p.isReady && !p.isBusy;
   });
   
-  if (readyProxies.length === 0) return null;
+  if (readyProxies.length === 0) return undefined;
   const proxy = readyProxies[currentProxyIndex % readyProxies.length];
   currentProxyIndex++;
   
@@ -133,6 +155,35 @@ function releaseProxy(proxyUrl, markDead = false) {
         if (markDead) p.isReady = false;
     }
 }
+
+function getPoolStats() {
+    const entries = Array.from(browserPool.values());
+    return {
+        configuredProxyCount: proxies.length,
+        activeBrowserCount: entries.length,
+        readyBrowserCount: entries.filter(p => p.isReady).length,
+        busyBrowserCount: entries.filter(p => p.isBusy).length,
+        maxBrowsers: MAX_BROWSERS,
+        trackingConcurrency: TRACKING_CONCURRENCY
+    };
+}
+
+app.get('/healthz', (req, res) => {
+    res.json({
+        ok: true,
+        uptimeSeconds: Math.round(process.uptime()),
+        pool: getPoolStats()
+    });
+});
+
+app.get('/readyz', (req, res) => {
+    const stats = getPoolStats();
+    const ready = stats.readyBrowserCount > 0;
+    res.status(ready ? 200 : 503).json({
+        ok: ready,
+        pool: stats
+    });
+});
 
 function normalize17Track(rawPackage) {
   const stateCode = rawPackage.e;
@@ -160,7 +211,7 @@ function normalize17Track(rawPackage) {
 
 async function scrapeUSPS(trackingNumber, isRace = false) {
   let proxy = getNextProxy();
-  if (!proxy) {
+  if (proxy === undefined) {
       if (isRace) throw new Error("No working proxies available for race");
       return { error: 'No working proxies available or all are busy. Please wait.' };
   }
@@ -255,7 +306,7 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
 
 async function retryFetchUSPS(trackingNumber) {
     const nextProxy = getNextProxy();
-    if (!nextProxy) {
+    if (nextProxy === undefined) {
         return { 
             trackingNumber: trackingNumber,
             carrier: 'USPS',
@@ -411,21 +462,54 @@ class AsyncQueue {
 }
 
 // Concurrency is naturally limited by the number of ready proxies. 
-// With Request Hedging (2 proxies per request) and 5 proxies total, max safe concurrency is 2.
-const trackingQueue = new AsyncQueue(2);
+// Sửa thành 1 để ngăn chặn hoàn toàn lỗi sập RAM (OOM) trên Render (giới hạn 512MB).
+const trackingQueue = new AsyncQueue(1);
 
-app.post('/api/search', async (req, res) => {
-  const { trackingNumbers } = req.body;
-  if (!trackingNumbers || !Array.isArray(trackingNumbers) || trackingNumbers.length === 0) {
+function normalizeTrackingInput(input) {
+  if (Array.isArray(input)) return input;
+  if (typeof input === 'string') return input.split(/[\n,]+/);
+  return [];
+}
+
+function isValidTrackingNumber(value) {
+  return typeof value === 'string'
+    && /^[a-zA-Z0-9_-]{5,50}$/.test(value)
+    && /\d/.test(value);
+}
+
+async function handleTrackingRequest(req, res) {
+  const input = req.body?.trackingNumbers
+    ?? req.query.trackingNumbers
+    ?? req.query.tracking_number
+    ?? req.query.trackingNumber
+    ?? req.query.number;
+
+  const trackingNumbers = [...new Set(
+    normalizeTrackingInput(input)
+      .map(num => typeof num === 'string' ? num.trim() : '')
+      .filter(Boolean)
+  )];
+
+  if (!trackingNumbers.length) {
     return res.status(400).json({ error: 'Invalid tracking numbers format.' });
+  }
+  if (trackingNumbers.length > MAX_TRACKING_NUMBERS) {
+    return res.status(400).json({
+      error: `Too many tracking numbers. Max allowed is ${MAX_TRACKING_NUMBERS}.`
+    });
   }
 
   try {
     const promises = trackingNumbers.map(num => {
-      if (typeof num !== 'string' || !num.trim()) {
-          return Promise.resolve({ error: 'Invalid tracking number format' });
+      if (!isValidTrackingNumber(num)) {
+          return Promise.resolve({
+              trackingNumber: num,
+              status: 0,
+              events: [],
+              error: 'Invalid tracking number format'
+          });
       }
-      return trackingQueue.add(() => trackPackage(num.trim()));
+      return trackingQueue.add(() => trackPackage(num));
     });
     
     const results = await Promise.all(promises);
@@ -434,7 +518,11 @@ app.post('/api/search', async (req, res) => {
     console.error('Engine error:', error);
     return res.status(500).json({ error: 'Tracking engine failed.', message: error.message });
   }
-});
+}
+
+app.post('/api/track', handleTrackingRequest);
+app.post('/api/search', handleTrackingRequest);
+app.get('/api/track', handleTrackingRequest);
 
 app.get('*', (req, res) => {
   res.send(`
@@ -450,7 +538,31 @@ app.get('*', (req, res) => {
   `);
 });
 
-app.listen(PORT, async () => {
-  console.log(`Sub-5s Persistent Tracking Engine running at http://localhost:${PORT}`);
-  await bootAllBrowsers();
+async function closeBrowserPool() {
+  await Promise.allSettled(
+    Array.from(browserPool.values()).map(entry => entry.browser.close())
+  );
+}
+
+function shutdown(signal) {
+  console.log(`[Shutdown] Received ${signal}. Closing browser pool...`);
+  const forceExit = setTimeout(() => process.exit(1), 25000);
+  forceExit.unref();
+  closeBrowserPool()
+    .finally(() => process.exit(0));
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('unhandledRejection', error => {
+  console.error('[UnhandledRejection]', error);
+});
+
+app.listen(PORT, HOST, async () => {
+  console.log(`Sub-5s Persistent Tracking Engine running at http://${HOST}:${PORT}`);
+  if (BOOT_BROWSERS) {
+    await bootAllBrowsers();
+  } else {
+    console.log('[Browser Pool] Boot skipped because BOOT_BROWSERS=false.');
+  }
 });
