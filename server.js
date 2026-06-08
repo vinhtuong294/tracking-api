@@ -115,7 +115,12 @@ async function initBrowserForProxy(proxyUrl) {
         console.log(`[Browser Pool] Successfully warmed up proxy: ${proxyUrl || 'LOCAL'}`);
         return true;
     } catch(error) {
-        console.log(`[Browser Pool] Failed to boot or warm up proxy: ${proxyUrl || 'LOCAL'} - ${error.message}`);
+        console.error(`[Browser Pool] Failed to boot proxy ${proxyUrl}: ${error.message}`);
+        browserPool.delete(proxyUrl);
+        // Tự động boot proxy tiếp theo nếu cái hiện tại bị lỗi ngay từ vòng gửi xe
+        const nextUrl = getNextProxyFromList();
+        if (nextUrl) initBrowserForProxy(nextUrl);
+        
         // Ensure we close the browser if it failed during goto
         try { if (browser) await browser.close(); } catch(e){}
         return false;
@@ -156,11 +161,19 @@ function getNextProxyFromList() {
     return proxy;
 }
 
-async function waitForReadyProxy(timeoutMs = 30000) {
+let isBootingFailsafe = false;
+async function waitForReadyProxy(timeoutMs = 60000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         const proxy = getNextProxy();
         if (proxy !== undefined) return proxy;
+        
+        // Failsafe: Nếu pool trống không và không ai đang boot, kích hoạt boot
+        if (browserPool.size === 0 && !isBootingFailsafe) {
+             isBootingFailsafe = true;
+             initBrowserForProxy(getNextProxyFromList()).finally(() => isBootingFailsafe = false);
+        }
+        
         await new Promise(r => setTimeout(r, 1000));
     }
     return undefined;
