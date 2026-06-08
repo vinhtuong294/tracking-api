@@ -148,6 +148,24 @@ function getNextProxy() {
   return proxy;
 }
 
+let globalProxyIndex = 0;
+function getNextProxyFromList() {
+    if (proxies.length === 0) return null;
+    const proxy = proxies[globalProxyIndex % proxies.length];
+    globalProxyIndex++;
+    return proxy;
+}
+
+async function waitForReadyProxy(timeoutMs = 30000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        const proxy = getNextProxy();
+        if (proxy !== undefined) return proxy;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    return undefined;
+}
+
 function releaseProxy(proxyUrl, markDead = false) {
     const p = browserPool.get(proxyUrl);
     if (p) {
@@ -210,7 +228,7 @@ function normalize17Track(rawPackage) {
 }
 
 async function scrapeUSPS(trackingNumber, isRace = false) {
-  let proxy = getNextProxy();
+  let proxy = await waitForReadyProxy(30000);
   if (proxy === undefined) {
       if (isRace) throw new Error("No working proxies available for race");
       return { error: 'No working proxies available or all are busy. Please wait.' };
@@ -312,17 +330,17 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
       }
       
       // Xoay vòng sang Proxy tiếp theo trong danh sách
-      const nextProxy = getNextProxy();
-      console.log(`[Rotation] Proxy ${proxy} failed, switching to next proxy: ${nextProxy}`);
-      initBrowserForProxy(nextProxy);
+      const nextProxyUrl = getNextProxyFromList();
+      console.log(`[Rotation] Proxy ${proxy} failed, switching to next proxy: ${nextProxyUrl}`);
+      initBrowserForProxy(nextProxyUrl);
 
       throw new Error('Timeout or blocked by carrier. Retrying in background...');
   }
 }
 
 async function retryFetchUSPS(trackingNumber) {
-    const nextProxy = getNextProxy();
-    if (nextProxy === undefined) {
+    let nextProxy = await waitForReadyProxy(30000);
+    if (!nextProxy) {
         return { 
             trackingNumber: trackingNumber,
             carrier: 'USPS',
@@ -400,7 +418,7 @@ async function retryFetchUSPS(trackingNumber) {
             try { await browserPool.get(nextProxy).browser.close(); } catch(e){}
             browserPool.delete(nextProxy);
         }
-        const rotatedProxy = getNextProxy();
+        const rotatedProxy = getNextProxyFromList();
         initBrowserForProxy(rotatedProxy);
         return { 
             trackingNumber: trackingNumber,
