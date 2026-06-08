@@ -304,11 +304,19 @@ async function scrapeUSPS(trackingNumber, isRace = false) {
 
   } catch (error) {
       console.error(`USPS API Error: ${error.message}`);
-      releaseProxy(proxy, true);
-      // Restart broken browser in background
-      initBrowserForProxy(proxy);
-      if (isRace) throw error;
-      return await retryFetchUSPS(trackingNumber);
+      
+      // Lỗi xảy ra: Đóng hẳn trình duyệt cũ để giải phóng RAM
+      if (browserPool.has(proxy)) {
+          try { await browserPool.get(proxy).browser.close(); } catch(e){}
+          browserPool.delete(proxy);
+      }
+      
+      // Xoay vòng sang Proxy tiếp theo trong danh sách
+      const nextProxy = getNextProxy();
+      console.log(`[Rotation] Proxy ${proxy} failed, switching to next proxy: ${nextProxy}`);
+      initBrowserForProxy(nextProxy);
+
+      throw new Error('Timeout or blocked by carrier. Retrying in background...');
   }
 }
 
@@ -388,8 +396,12 @@ async function retryFetchUSPS(trackingNumber) {
             source: 'USPS Web API Direct (Retry Sub-5s)'
         };
     } catch (error) {
-        releaseProxy(nextProxy, true);
-        initBrowserForProxy(nextProxy);
+        if (browserPool.has(nextProxy)) {
+            try { await browserPool.get(nextProxy).browser.close(); } catch(e){}
+            browserPool.delete(nextProxy);
+        }
+        const rotatedProxy = getNextProxy();
+        initBrowserForProxy(rotatedProxy);
         return { 
             trackingNumber: trackingNumber,
             carrier: 'USPS',
