@@ -1,0 +1,160 @@
+<style>
+  .tracking-container { max-width: 650px; margin: 40px auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .tracking-header { text-align: center; margin-bottom: 30px; }
+  .tracking-header h2 { font-size: 28px; color: #111827; margin-bottom: 10px; font-weight: 700; }
+  .tracking-header p { color: #6b7280; font-size: 16px; }
+  .tracking-input-group { display: flex; gap: 12px; margin-bottom: 40px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border-radius: 12px; }
+  .tracking-input { flex: 1; padding: 18px 24px; border: 2px solid #e5e7eb; border-radius: 12px; font-size: 16px; outline: none; transition: all 0.3s ease; }
+  .tracking-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1); }
+  .tracking-btn { padding: 0 35px; background: #3b82f6; color: white; border: none; border-radius: 12px; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; min-width: 120px; }
+  .tracking-btn:hover { background: #2563eb; transform: translateY(-1px); }
+  .tracking-btn:disabled { background: #9ca3af; cursor: not-allowed; transform: none; }
+  
+  .tracking-result { background: #fff; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01); padding: 30px; display: none; border: 1px solid #f3f4f6; }
+  .tracking-summary { padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; align-items: center; }
+  .tracking-number-display { font-size: 18px; font-weight: 700; color: #111827; }
+  .tracking-carrier { background: #eff6ff; color: #1d4ed8; padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+  
+  .timeline { position: relative; padding-left: 35px; list-style: none; margin: 0; }
+  .timeline::before { content: ''; position: absolute; left: 15px; top: 10px; bottom: 20px; width: 2px; background: #e5e7eb; }
+  .timeline-item { position: relative; margin-bottom: 25px; }
+  .timeline-item:last-child { margin-bottom: 0; }
+  .timeline-item::before { content: ''; position: absolute; left: -26px; top: 5px; width: 14px; height: 14px; border-radius: 50%; background: #e5e7eb; border: 3px solid #fff; box-shadow: 0 0 0 1px #e5e7eb; z-index: 1; }
+  
+  /* Highlight the latest event */
+  .timeline-item.latest::before { background: #10b981; box-shadow: 0 0 0 2px #10b981; }
+  .timeline-item.latest .timeline-status { color: #059669; font-weight: 700; font-size: 17px; }
+  
+  .timeline-date { font-size: 13px; color: #6b7280; font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .timeline-status { font-size: 16px; color: #374151; font-weight: 600; margin-bottom: 4px; line-height: 1.4; }
+  .timeline-location { font-size: 14px; color: #6b7280; }
+  
+  .loader { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid #ffffff; border-radius: 50%; width: 22px; height: 22px; animation: spin 1s linear infinite; display: none; margin: 0 auto; }
+  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  
+  .error-msg { background: #fef2f2; border-left: 4px solid #ef4444; color: #b91c1c; padding: 15px 20px; border-radius: 8px; font-weight: 500; margin-bottom: 20px; display: none; }
+  
+  @media (max-width: 480px) {
+    .tracking-input-group { flex-direction: column; box-shadow: none; gap: 15px; }
+    .tracking-btn { padding: 16px; width: 100%; }
+  }
+</style>
+
+<div class="tracking-container">
+  <div class="tracking-header">
+    <h2>Track Your Order</h2>
+    <p>Enter your tracking number below to see the latest updates.</p>
+  </div>
+
+  <div class="tracking-input-group">
+    <input type="text" id="trackNum" class="tracking-input" placeholder="e.g. 9200190339407914707731">
+    <button id="trackBtn" class="tracking-btn" onclick="trackPackage()">
+      <span id="btnText">TRACK</span>
+      <div id="btnLoader" class="loader"></div>
+    </button>
+  </div>
+  
+  <div id="errorMsg" class="error-msg"></div>
+  
+  <div id="trackingResult" class="tracking-result">
+    <div class="tracking-summary">
+      <div class="tracking-number-display">Tracking: <span id="displayNum"></span></div>
+      <div class="tracking-carrier">USPS</div>
+    </div>
+    
+    <div id="expectedDeliveryBox" style="background: #e0f2fe; border: 1px solid #bae6fd; padding: 15px 20px; border-radius: 12px; margin-bottom: 25px; display: none; align-items: center; gap: 10px;">
+      <span style="font-size: 24px;">📅</span>
+      <strong style="color: #0369a1; font-size: 15px; line-height: 1.4;" id="expectedDeliveryText"></strong>
+    </div>
+    
+    <ul id="timeline" class="timeline"></ul>
+  </div>
+</div>
+
+<script>
+async function trackPackage() {
+  const num = document.getElementById('trackNum').value.trim();
+  if(!num) {
+    showError('Please enter a tracking number!');
+    return;
+  }
+  
+  const btn = document.getElementById('trackBtn');
+  const btnText = document.getElementById('btnText');
+  const btnLoader = document.getElementById('btnLoader');
+  const resultDiv = document.getElementById('trackingResult');
+  const errorMsg = document.getElementById('errorMsg');
+  const timeline = document.getElementById('timeline');
+  const displayNum = document.getElementById('displayNum');
+  const expectedDeliveryBox = document.getElementById('expectedDeliveryBox');
+  const expectedDeliveryText = document.getElementById('expectedDeliveryText');
+  
+  // Reset UI & Show Loading
+  btn.disabled = true;
+  btnText.style.display = 'none';
+  btnLoader.style.display = 'block';
+  resultDiv.style.display = 'none';
+  errorMsg.style.display = 'none';
+  expectedDeliveryBox.style.display = 'none';
+  timeline.innerHTML = '';
+  
+  try {
+    // Gọi API của bạn trên Render
+    const response = await fetch('https://tracking-api-ru28.onrender.com/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackingNumbers: [num] })
+    });
+    
+    const data = await response.json();
+    
+    if(!response.ok || !data.success) {
+      throw new Error(data.error || 'Could not find tracking info. Please check the number and try again.');
+    }
+    
+    if(data.data && data.data[0] && data.data[0].events && data.data[0].events.length > 0) {
+      displayNum.textContent = num;
+      
+      if (data.data[0].expectedDelivery) {
+          expectedDeliveryText.textContent = data.data[0].expectedDelivery;
+          expectedDeliveryBox.style.display = 'flex';
+      }
+      
+      data.data[0].events.forEach((ev, index) => {
+        const li = document.createElement('li');
+        li.className = 'timeline-item';
+        if(index === 0) li.classList.add('latest'); // Highlight sự kiện mới nhất
+        
+        li.innerHTML = `
+          <div class="timeline-date">${ev.date || ''} ${ev.time ? '• ' + ev.time : ''}</div>
+          <div class="timeline-status">${ev.status || 'Update'}</div>
+          <div class="timeline-location">${ev.location || ''}</div>
+        `;
+        timeline.appendChild(li);
+      });
+      resultDiv.style.display = 'block';
+    } else {
+      throw new Error('No tracking events available for this package yet.');
+    }
+  } catch(e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btnText.style.display = 'block';
+    btnLoader.style.display = 'none';
+  }
+}
+
+function showError(msg) {
+  const errorMsg = document.getElementById('errorMsg');
+  errorMsg.textContent = msg;
+  errorMsg.style.display = 'block';
+}
+
+// Bắt sự kiện nhấn phím Enter để tra cứu
+document.getElementById('trackNum').addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') {
+      trackPackage();
+    }
+});
+</script>
